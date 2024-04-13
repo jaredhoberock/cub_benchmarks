@@ -1,4 +1,4 @@
-// circle --verbose -O3 -std=c++20 -I. -sm_60 block_copy.cpp -lcudart -lfmt -o block_copy
+// circle --verbose -O3 -std=c++20 -I../ubu-tot -sm_60 block_load_store.cpp -lcudart -lfmt -o block_load_store
 #include "measure_bandwidth_of_invocation.hpp"
 #include "validate_result.hpp"
 #include <fmt/core.h>
@@ -8,7 +8,7 @@
 #include <ubu/ubu.hpp>
 
 template<ubu::span_like I, ubu::span_like R>
-ubu::cuda::event copy_after(ubu::cuda::device_executor gpu, const ubu::cuda::event& before, I input, R result)
+ubu::cuda::event load_store_after(ubu::cuda::device_executor gpu, const ubu::cuda::event& before, I input, R result)
 {
   using namespace ubu;
 
@@ -21,7 +21,7 @@ ubu::cuda::event copy_after(ubu::cuda::device_executor gpu, const ubu::cuda::eve
   // kernel configuration
   std::pair kernel_shape(block_size, num_blocks);
 
-  // 46 registers / 391.858 GB/s ~ 89.7% peak bandwidth
+  // 32 registers / 391.858 GB/s ~ 89.7% peak bandwidth
   return bulk_execute_after(gpu,
                             before,
                             kernel_shape,
@@ -54,7 +54,7 @@ ubu::cuda::event copy_after(ubu::cuda::device_executor gpu, const ubu::cuda::eve
 template<class T>
 using device_vector = std::vector<T, ubu::cuda::managed_allocator<T>>;
 
-void test_copy_after(std::size_t n)
+void test_load_store_after(std::size_t n)
 {
   device_vector<int> input(n, 1);
   std::iota(input.begin(), input.end(), 0);
@@ -64,10 +64,10 @@ void test_copy_after(std::size_t n)
   ubu::cuda::event before = ubu::initial_happening(ex);
 
   // compute the result on the GPU
-  copy_after(ex, before, std::span(input), std::span(result)).wait();
+  load_store_after(ex, before, std::span(input), std::span(result)).wait();
 
   // check the result
-  validate_result(to_host(input), to_host(input), to_host(result), fmt::format("copy_after({})", n));
+  validate_result(to_host(input), to_host(input), to_host(result), fmt::format("load_store_after({})", n));
 }
 
 void test_correctness(std::size_t max_size, bool verbose = false)
@@ -76,10 +76,10 @@ void test_correctness(std::size_t max_size, bool verbose = false)
   {
     if(verbose)
     {
-      std::cout << "test_copy_after(" << sz << ")...";
+      std::cout << "test_load_store_after(" << sz << ")...";
     }
 
-    test_copy_after(sz);
+    test_load_store_after(sz);
 
     if(verbose)
     {
@@ -102,13 +102,13 @@ double test_performance(std::size_t size, std::size_t num_trials)
   ubu::cuda::event before = ubu::initial_happening(ex);
 
   // warmup
-  copy_after(ex, before, input_view, result_view);
+  load_store_after(ex, before, input_view, result_view);
 
   std::size_t num_bytes = input_view.size_bytes() + result_view.size_bytes();
 
   return measure_bandwidth_of_invocation_in_gigabytes_per_second(num_trials, num_bytes, [&]
   {
-    copy_after(ex, before, input_view, result_view);
+    load_store_after(ex, before, input_view, result_view);
   });
 }
 
@@ -123,8 +123,14 @@ double theoretical_peak_bandwidth_in_gigabytes_per_second()
   return (memory_clock_mhz * memory_bus_width_bits * 2 / 8.0) / 1024.0;
 }
 
+constexpr double performance_regression_threshold_as_percentage_of_peak_bandwidth = 0.88;
+
 int main(int argc, char** argv)
 {
+  std::size_t performance_size = ubu::cuda::device_allocator<int>().max_size() / 3;
+  std::size_t num_performance_trials = 1000;
+  std::size_t correctness_size = performance_size;
+
   if(argc == 2)
   {
     std::string_view arg(argv[1]);
@@ -134,24 +140,31 @@ int main(int argc, char** argv)
       return -1;
     }
 
-    test_correctness(1 << 16);
-    std::cout << "OK" << std::endl;
-    return 0;
+    correctness_size = 1 << 16;
+    performance_size /= 10;
+    num_performance_trials = 30;
   }
 
   std::size_t max_size = 23456789;
 
   std::cout << "Testing correctness... " << std::flush;
-  test_correctness(max_size, max_size > 23456789);
+  test_correctness(correctness_size, correctness_size > 23456789);
   std::cout << "Done." << std::endl;
   
   std::cout << "Testing performance... " << std::flush;
-  double bandwidth = test_performance(ubu::cuda::device_allocator<int>().max_size() / 2, 1000);
+  double bandwidth = test_performance(performance_size, num_performance_trials);
   std::cout << "Done." << std::endl;
 
   double peak_bandwidth = theoretical_peak_bandwidth_in_gigabytes_per_second();
   std::cout << "Bandwidth: " << bandwidth << " GB/s" << std::endl;
   std::cout << "Percent peak bandwidth: " << bandwidth / peak_bandwidth << "%" << std::endl;
+
+  if(bandwidth / peak_bandwidth < performance_regression_threshold_as_percentage_of_peak_bandwidth)
+  {
+    std::cerr << "Theoretical peak bandwidth: " << peak_bandwidth << " GB/s " << std::endl;
+    std::cerr << "Regression detected." << std::endl;
+    return -1;
+  }
 
   std::cout << "OK" << std::endl;
 
