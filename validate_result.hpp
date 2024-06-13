@@ -81,6 +81,32 @@ void validate_result(const std::vector<T>& expected, const std::vector<T>& input
   }
 }
 
+template<class T>
+void validate_result(const T& expected, const T& result, const std::string& test_name = "test")
+{
+  if(expected != result)
+  {
+    std::string what = fmt::format("{} failed\n", test_name);
+    what += fmt::format("expected: {}\n", expected);
+    what += fmt::format("result:   {}\n", result);
+
+    throw std::runtime_error(what);
+  }
+}
+
+template<std::invocable R, std::invocable F>
+void validate(R reference, F test, const std::string& test_name = "test")
+{
+  // compute the expected result from the reference
+  auto expected = reference();
+
+  // compute the result of the function
+  auto result = test();
+
+  // check the result
+  validate_result(expected, result, test_name);
+}
+
 std::vector<std::size_t> test_sizes(std::size_t max_size)
 {
   std::vector<std::size_t> result = {0, 1, 2};
