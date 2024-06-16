@@ -1,6 +1,6 @@
-// circle --verbose -O3 -std=c++20 -I../ubu-tot -sm_60 block_load_store.cpp -lcudart -lfmt -o block_load_store
+// circle --verbose -O3 -std=c++20 -I../ubu-tot -sm_80 block_load_store.cpp -lcudart -lfmt -o block_load_store
 #include "measure_bandwidth_of_invocation.hpp"
-#include "validate_result.hpp"
+#include "validate.hpp"
 #include <fmt/core.h>
 #include <cub/cub.cuh>
 #include <numeric>
@@ -21,7 +21,9 @@ ubu::cuda::event load_store_after(ubu::cuda::device_executor gpu, const ubu::cud
   // kernel configuration
   std::pair kernel_shape(block_size, num_blocks);
 
-  // 32 registers / 391.858 GB/s ~ 89.7% peak bandwidth
+  // sm_80: 32 registers
+  // 391.858 GB/s ~ 89.7% peak bandwidth on RTX 3070
+  // 684.252 GB/s ~ 91.2% peak bandwidth on RTX A5000
   return bulk_execute_after(gpu,
                             before,
                             kernel_shape,
@@ -125,9 +127,14 @@ double theoretical_peak_bandwidth_in_gigabytes_per_second()
 
 constexpr double performance_regression_threshold_as_percentage_of_peak_bandwidth = 0.88;
 
+performance_expectations_t device_reduce_expectations = {
+  {"NVIDIA GeForce RTX 3070", {0.89, 0.90}},
+  {"NVIDIA RTX A5000", {0.91, 0.92}}
+};
+
 int main(int argc, char** argv)
 {
-  std::size_t performance_size = ubu::cuda::device_allocator<int>().max_size() / 3;
+  std::size_t performance_size = choose_large_problem_size_using_heuristic<int>(2);
   std::size_t num_performance_trials = 1000;
   std::size_t correctness_size = performance_size;
 
@@ -145,8 +152,6 @@ int main(int argc, char** argv)
     num_performance_trials = 30;
   }
 
-  std::size_t max_size = 23456789;
-
   std::cout << "Testing correctness... " << std::flush;
   test_correctness(correctness_size, correctness_size > 23456789);
   std::cout << "Done." << std::endl;
@@ -155,19 +160,10 @@ int main(int argc, char** argv)
   double bandwidth = test_performance(performance_size, num_performance_trials);
   std::cout << "Done." << std::endl;
 
-  double peak_bandwidth = theoretical_peak_bandwidth_in_gigabytes_per_second();
-  std::cout << "Bandwidth: " << bandwidth << " GB/s" << std::endl;
-  std::cout << "Percent peak bandwidth: " << bandwidth / peak_bandwidth << "%" << std::endl;
-
-  if(bandwidth / peak_bandwidth < performance_regression_threshold_as_percentage_of_peak_bandwidth)
-  {
-    std::cerr << "Theoretical peak bandwidth: " << peak_bandwidth << " GB/s " << std::endl;
-    std::cerr << "Regression detected." << std::endl;
-    return -1;
-  }
+  report_performance(bandwidth_to_performance(bandwidth), device_reduce_expectations);
 
   std::cout << "OK" << std::endl;
 
-  return 0;
+  return 0; 
 }
 
